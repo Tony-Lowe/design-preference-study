@@ -35,8 +35,10 @@ try{
  const saved=await call('/answers',{method:'POST',body:answer});inserted=true;
  if(saved.received!==24||!saved.complete)throw Error('Answer write was not confirmed');
  const list=await call('/admin/answers',{admin:true});
- if(!list.items?.some(item=>item.id===id))throw Error('Admin read did not find smoke answer');
- console.log('PASS: health, database write, and admin read');
+ const item=list.items?.find(item=>item.id===id);
+ if(!item)throw Error('Admin read did not find smoke answer');
+ if(!item.ipAddress)throw Error('Gateway IP address was not recorded');
+ console.log('PASS: health, database write, admin read, and IP capture');
 }finally{
  if(inserted){
   const withdrawn=await call('/answers',{method:'DELETE',body:{id,token}});
