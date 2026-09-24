@@ -1,5 +1,6 @@
 """Exercise offline registration, batch recovery, resume, and validation locally."""
 import json
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -8,14 +9,21 @@ from pathlib import Path
 base = 'http://127.0.0.1:8787'
 cases = json.loads(Path('data/cases.json').read_text())
 
-def call(path, method='POST', body=None, auth=None):
+def call(path, method='POST', body=None, auth=None, admin=None):
     headers={'Content-Type': 'text/plain', 'Origin': 'https://tony-lowe.github.io'}
     if auth: headers['Authorization']='Participant ' + auth
+    if admin: headers['Authorization']='Bearer ' + admin
     req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None,
                                  method=method, headers=headers)
-    try: response = urllib.request.urlopen(req)
-    except urllib.error.HTTPError as error: response = error
-    return response.status, json.load(response)
+    for attempt in range(4):
+        try: response = urllib.request.urlopen(req)
+        except urllib.error.HTTPError as error: response = error
+        raw=response.read()
+        if response.status==503 and raw.startswith(b'Your worker restarted mid-request') and attempt<3:
+            time.sleep(.1)
+            continue
+        return response.status, json.loads(raw)
+    raise AssertionError('Worker did not recover')
 
 assignments = []
 for pool in ('user_selected', 'prior_reviewed'):
@@ -50,4 +58,23 @@ try:
     assert status == 200 and resumed['done'] and len(resumed['savedVotes']) == 24
 finally:
     assert call('/api/session', method='DELETE', auth=token)[0] == 200
-print('offline registration, validation, batch recovery, idempotency, and resume passed')
+
+admin_key=Path('.admin-key').read_text().strip()
+manual_token=str(uuid.uuid4())+str(uuid.uuid4())
+manual_id=str(uuid.uuid4())
+manual_assignments=[{**a,'id':str(uuid.uuid4())} for a in assignments]
+manual_votes=[{'trialId':a['id'],'dimension':dim,'choice':'tie','reasons':[],'comment':'','elapsedMs':500}
+              for a in manual_assignments for dim in ('aesthetic','adherence')]
+answer={'kind':'design-preference-study-offline-answer','version':cases['version'],'participant':manual_id[:8],
+        'token':manual_token,'session':{'id':manual_id,'version':cases['version'],'assignments':manual_assignments},
+        'demo':True,'votes':manual_votes}
+assert call('/api/admin/import',body=answer)[0]==401
+for i in range(0,24,6):
+    status,imported=call('/api/admin/import',body={**answer,'votes':manual_votes[i:i+6]},admin=admin_key)
+    assert status==200 and imported['imported']==6 and imported['saved']==i+6 and imported['demo'],(status,imported)
+try:
+    status,repeated=call('/api/admin/import',body={**answer,'votes':manual_votes[:6]},admin=admin_key)
+    assert status==200 and repeated['imported']==0 and repeated['saved']==24
+finally:
+    assert call('/api/session',method='DELETE',auth=manual_token)[0]==200
+print('offline registration, batch recovery, manual admin import, idempotency, and resume passed')

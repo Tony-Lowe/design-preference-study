@@ -9,7 +9,7 @@ const english:Record<string,string>={
  '谢谢，您的判断已保存。':'Thank you. Your responses have been saved.','您的判断已暂存在本机。':'Your responses are saved on this device.',
  '这是演示会话，不计入研究结果。':'This preview does not count toward the study.','全部已同步，可以关闭页面。':'Everything has synced. You may close this page.',
  '参与编号':'Participant ID','已同步':'Synced','正在同步':'Syncing','等待同步':'Awaiting sync',
- '正在上传…':'Uploading…','立即重试上传':'Retry upload now','下载答卷备用':'Download backup responses',
+ '正在上传…':'Uploading…','立即重试上传':'Retry upload now','下载答卷备用':'Download backup responses','复制答卷文本':'Copy response text',
  '为保持独立判断，参与页面不展示方法名称或实时胜率。':'To preserve independent judgments, method names and live results are hidden.',
  '指令遵循 · 2 / 2':'Instruction adherence · 2 / 2','美观评价 · 1 / 2':'Visual appeal · 1 / 2',
  '哪张图更符合设计要求？':'Which image better follows the design requirements?','哪张图在视觉上更美观？':'Which image is more visually appealing?',

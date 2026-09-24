@@ -15,7 +15,8 @@ type Trial={id:string;index:number;dimension:'aesthetic'|'adherence';images:stri
 type PlanTrial=Omit<Trial,'pool'|'dimension'> & {requirements:NonNullable<Trial['requirements']>};
 type LocalVote={trialId:string;dimension:'aesthetic'|'adherence';choice:string;reasons:string[];comment:string;elapsedMs:number};
 type SavedVote={trialId:string;dimension:string;choice:string};
-type State={active:boolean;done?:boolean;stale?:boolean;error?:string;demo?:boolean;participant?:string;version?:string;total?:number;totalJudgments?:number;completed?:number;saved?:number;trial?:Trial;plan?:PlanTrial[];savedVotes?:SavedVote[];offlineSession?:{id:string;version:string;assignments:OfflineAssignment[]}};
+type OfflineSession={id:string;version:string;assignments:OfflineAssignment[]};
+type State={active:boolean;done?:boolean;stale?:boolean;error?:string;demo?:boolean;participant?:string;version?:string;total?:number;totalJudgments?:number;completed?:number;saved?:number;trial?:Trial;plan?:PlanTrial[];savedVotes?:SavedVote[];offlineSession?:OfflineSession;offlineBackup?:OfflineSession};
 const cacheKey='design-study-local-progress-v1';
 const voteKey=(v:{trialId:string;dimension:string})=>`${v.trialId}:${v.dimension}`;
 function readCache():{base:State;votes:LocalVote[];confirmed:string[]}|null{try{const data=JSON.parse(localStorage.getItem(cacheKey)||'null');return data?.base?.plan&&Array.isArray(data.votes)&&Array.isArray(data.confirmed)?data:null;}catch{return null;}}
@@ -44,7 +45,7 @@ export default function Home(){
  const [zoomScale,setZoomScale]=useState(1);
  useEffect(()=>setZoomScale(1),[zoom?.src]);
  const [overlayOn,setOverlayOn]=useState(false),[overlayOpacity,setOverlayOpacity]=useState(0.8),[overlayBroken,setOverlayBroken]=useState(false),[subjectOn,setSubjectOn]=useState(false),[subjectOpacity,setSubjectOpacity]=useState(0.62),[subjectBroken,setSubjectBroken]=useState(false),[compactPair,setCompactPair]=useState(false);
- const [loadedImages,setLoadedImages]=useState<string[]>([]),[broken,setBroken]=useState(false),[confirmedCount,setConfirmedCount]=useState(0),[syncing,setSyncing]=useState(false),[syncError,setSyncError]=useState('');
+ const [loadedImages,setLoadedImages]=useState<string[]>([]),[broken,setBroken]=useState(false),[confirmedCount,setConfirmedCount]=useState(0),[syncing,setSyncing]=useState(false),[syncError,setSyncError]=useState(''),[copyMessage,setCopyMessage]=useState('');
  const began=useRef(Date.now()),votesRef=useRef<LocalVote[]>([]),confirmedRef=useRef(new Set<string>()),baseRef=useRef<State|null>(null),syncingRef=useRef(false),syncTimer=useRef<number|null>(null),submitLock=useRef(false),prefetchRef=useRef(new Map<string,HTMLImageElement>());
  const flush=useCallback(async()=>{
   if(syncingRef.current)return;
@@ -57,7 +58,7 @@ export default function Home(){
     const registered=await registration.json() as State;
     if(!registration.ok||!registered.plan)throw Error(registered.error||'暂时无法连接评分服务器');
     if(registered.participant!==baseRef.current.participant)throw Error('参与编号不一致，请保留本机答卷');
-    baseRef.current={...registered,offlineSession:undefined};
+    baseRef.current={...registered,offlineSession:undefined,offlineBackup:baseRef.current.offlineBackup};
     persist(baseRef.current,votesRef.current,confirmedRef.current);
    }
    if(!pending.length){succeeded=true;return;}
@@ -73,7 +74,8 @@ export default function Home(){
   if(!j.plan||!j.participant||!j.version){setState(j);return;}
   const cached=readCache(),previous=cached?.base.participant===j.participant&&cached.base.version===j.version?cached.votes:[];
   const merged=mergeVotes(j.plan,j.savedVotes??[],previous),confirmed=new Set((j.savedVotes??[]).map(voteKey));
-  baseRef.current=j;votesRef.current=merged;confirmedRef.current=confirmed;setConfirmedCount(confirmed.size);setState(localState(j,merged));setSyncError('');persist(j,merged,confirmed);
+  const base={...j,offlineBackup:cached?.base.participant===j.participant?cached.base.offlineBackup:undefined};
+  baseRef.current=base;votesRef.current=merged;confirmedRef.current=confirmed;setConfirmedCount(confirmed.size);setState(localState(base,merged));setSyncError('');persist(base,merged,confirmed);
   if(merged.some(v=>!confirmed.has(voteKey(v))))scheduleFlush(0);
  },[scheduleFlush]);
  const load=useCallback(async()=>{setError('');try{const r=await studyFetch('/api/session',{method:'POST',body:JSON.stringify({resume:true,plan:true})});const j=await r.json() as State;if(!r.ok)throw Error(j.error);if(j.active)applyServer(j);else if(!baseRef.current)setState(j);}catch(e){if(!baseRef.current)setError('服务器暂不可达，仍可直接开始评选。');}},[applyServer]);
@@ -87,17 +89,23 @@ export default function Home(){
   if(!consent)return;setError('');
   try{
    const assignments=makeOfflineAssignments(),id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID();
-   const base:State={active:true,participant:id.slice(0,8),version:offlineVersion,demo:new URLSearchParams(location.search).get('preview')==='1',total:12,totalJudgments:24,plan:offlinePlan(assignments),offlineSession:{id,version:offlineVersion,assignments}};
+   const offlineSession={id,version:offlineVersion,assignments};
+   const base:State={active:true,participant:id.slice(0,8),version:offlineVersion,demo:new URLSearchParams(location.search).get('preview')==='1',total:12,totalJudgments:24,plan:offlinePlan(assignments),offlineSession,offlineBackup:offlineSession};
    persist(base,[],new Set());setStudyToken(token);
    baseRef.current=base;votesRef.current=[];confirmedRef.current=new Set();setConfirmedCount(0);setState(localState(base,[]));scheduleFlush(0);window.scrollTo(0,0);
   }catch{setError('本机无法保存答卷，请检查浏览器存储设置。');}
  }
  function startFresh(){setConsent(true);localStorage.removeItem(cacheKey);localStorage.removeItem('design-study-session-v1');setState({active:false,total:12,totalJudgments:24});setError('请勾选同意后开始新版评选。');}
- function downloadAnswers(){
-  if(!baseRef.current)return;
-  const data={kind:'design-preference-study-offline-answer',version:baseRef.current.version,participant:baseRef.current.participant,token:localStorage.getItem('design-study-session-v1'),session:baseRef.current.offlineSession,plan:baseRef.current.plan,votes:votesRef.current,confirmed:[...confirmedRef.current]};
-  const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download=`design-study-${baseRef.current.participant}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ function answerData(){
+  if(!baseRef.current)return '';
+  const data={kind:'design-preference-study-offline-answer',version:baseRef.current.version,participant:baseRef.current.participant,token:localStorage.getItem('design-study-session-v1'),session:baseRef.current.offlineBackup??baseRef.current.offlineSession,demo:baseRef.current.demo,votes:votesRef.current};
+  return JSON.stringify(data);
  }
+ function downloadAnswers(){
+  const answer=answerData();if(!answer)return;
+  const url=URL.createObjectURL(new Blob([answer],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download=`design-study-${baseRef.current?.participant}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }
+ async function copyAnswers(){try{await navigator.clipboard.writeText(answerData());setCopyMessage(language==='en'?'Copied. Send this text to the researcher.':'已复制，请把答卷文本发给研究者。');}catch{setCopyMessage(language==='en'?'Copy failed. Please download the JSON file.':'复制失败，请改用下载 JSON 文件。');}}
  function submit(){if(!state?.trial||!state.plan||!choice||busy||submitLock.current)return;submitLock.current=true;setError('');const vote:LocalVote={trialId:state.trial.id,dimension:state.trial.dimension,choice,reasons,comment,elapsedMs:Date.now()-began.current};const updated=[...votesRef.current,vote];
   try{persist(baseRef.current??state,updated,confirmedRef.current);}catch{setError('本机暂存失败，请检查浏览器存储空间后重试。');submitLock.current=false;return;}
   votesRef.current=updated;setChoice('');setState(localState(baseRef.current??state,updated));window.scrollTo(0,0);scheduleFlush(vote.dimension==='adherence'?0:4000);
@@ -123,7 +131,7 @@ export default function Home(){
  return <main className="study-shell"><header className="masthead"><div className="brand"><span className="brand-icon"><ScanEye size={22}/></span><div>{t('设计图像偏好研究')}<small>VISUAL PREFERENCE STUDY</small></div></div><div className="header-status"><button type="button" className="language-switch" onClick={()=>changeLanguage(language==='zh'?'en':'zh')} aria-label={language==='zh'?'Switch to English':'切换为中文'}>{language==='zh'?'English':'中文'}</button><span className="pilot-tag">{t(state?.demo?'演示 · 不计入统计':'正式评选')}</span>{state?.active&&<span className="saved-status"><CloudCheck size={15}/>{language==='en'?`Selected ${state.saved??0} · Cloud received ${confirmedCount}${syncing?' · Syncing':''}`:`已选 ${state.saved??0} 项 · 云端已收 ${confirmedCount} 项${syncing?' · 同步中':''}`}</span>}</div></header>
  {error&&<div className="error" role="alert">{error}{state?.active&&<button className="retry" onClick={load}>{t('重新读取进度')}</button>}</div>}
  {syncError&&<div className="sync-notice" role="status">{t(syncError)}<button className="retry" onClick={()=>scheduleFlush(0)}>{t('重试上传')}</button></div>}
- {state?.stale?<section className="completion"><h1>{t('研究版本已更新')}</h1><p>{t('旧版评分会保留并与新版分开统计。新版会在首次成功同步时记录 IP 地址，供研究管理者核查重复参与。')}</p><Button onClick={startFresh} disabled={busy} className="submit-vote">{t('开始新版评选')}<ArrowRight size={16}/></Button></section>:state?.done?<section className="completion"><span className="complete-icon"><Check size={32}/></span><p className="eyebrow">{t(confirmedCount>=(state.totalJudgments??24)?'全部完成':'全部选完，等待同步')}</p><h1>{t(confirmedCount>=(state.totalJudgments??24)?'谢谢，您的判断已保存。':'您的判断已暂存在本机。')}</h1><p>{language==='en'?`Completed ${state.total} image pairs and ${state.saved} judgments. `:`已完成 ${state.total} 组比较，共 ${state.saved} 项判断。`}{confirmedCount>=(state.totalJudgments??24)?t(state.demo?'这是演示会话，不计入研究结果。':'全部已同步，可以关闭页面。'):(language==='en'?`The cloud has received ${confirmedCount}. Retry syncing, or download your responses and send them to the researcher if the server remains unreachable.`:`云端已收到 ${confirmedCount} 项。可重试同步；如始终无法连接，请下载答卷并发送给研究者。`)}</p><div className="receipt">{t('参与编号')}<b>{state.participant}</b><span>{language==='en'?'Response status · ':'评分记录 · '}{t(confirmedCount>=(state.totalJudgments??24)?'已同步':syncing?'正在同步':'等待同步')}</span></div>{confirmedCount<(state.totalJudgments??24)&&<><Button onClick={()=>scheduleFlush(0)} disabled={syncing} className="submit-vote">{t(syncing?'正在上传…':'立即重试上传')}</Button><Button onClick={downloadAnswers} variant="outline"><Download size={16}/>{t('下载答卷备用')}</Button></>}<p className="quiet">{t('为保持独立判断，参与页面不展示方法名称或实时胜率。')}</p></section>:trial?<>
+ {state?.stale?<section className="completion"><h1>{t('研究版本已更新')}</h1><p>{t('旧版评分会保留并与新版分开统计。新版会在首次成功同步时记录 IP 地址，供研究管理者核查重复参与。')}</p><Button onClick={startFresh} disabled={busy} className="submit-vote">{t('开始新版评选')}<ArrowRight size={16}/></Button></section>:state?.done?<section className="completion"><span className="complete-icon"><Check size={32}/></span><p className="eyebrow">{t(confirmedCount>=(state.totalJudgments??24)?'全部完成':'全部选完，等待同步')}</p><h1>{t(confirmedCount>=(state.totalJudgments??24)?'谢谢，您的判断已保存。':'您的判断已暂存在本机。')}</h1><p>{language==='en'?`Completed ${state.total} image pairs and ${state.saved} judgments. `:`已完成 ${state.total} 组比较，共 ${state.saved} 项判断。`}{confirmedCount>=(state.totalJudgments??24)?t(state.demo?'这是演示会话，不计入研究结果。':'全部已同步，可以关闭页面。'):(language==='en'?`The cloud has received ${confirmedCount}. Retry syncing, or send the copied response text or downloaded JSON to the researcher if the server remains unreachable.`:`云端已收到 ${confirmedCount} 项。可重试同步；如始终无法连接，请复制答卷文本或下载 JSON，发送给研究者。`)}</p><div className="receipt">{t('参与编号')}<b>{state.participant}</b><span>{language==='en'?'Response status · ':'评分记录 · '}{t(confirmedCount>=(state.totalJudgments??24)?'已同步':syncing?'正在同步':'等待同步')}</span></div>{confirmedCount<(state.totalJudgments??24)&&<><Button onClick={()=>scheduleFlush(0)} disabled={syncing} className="submit-vote">{t(syncing?'正在上传…':'立即重试上传')}</Button><Button onClick={copyAnswers} variant="outline">{t('复制答卷文本')}</Button><Button onClick={downloadAnswers} variant="outline"><Download size={16}/>{t('下载答卷备用')}</Button>{copyMessage&&<p role="status" className="import-success">{copyMessage}</p>}</>}<p className="quiet">{t('为保持独立判断，参与页面不展示方法名称或实时胜率。')}</p></section>:trial?<>
  <section className="task-heading"><div><p className="eyebrow">{language==='en'?`Pair ${trial.index} / ${state.total} · `:`第 ${trial.index} / ${state.total} 组 · `}{t(adherence?'指令遵循 · 2 / 2':'美观评价 · 1 / 2')}</p><h1>{t(adherence?'哪张图更符合设计要求？':'哪张图在视觉上更美观？')}</h1><p>{t(adherence?'逐框核对指定对象及其颜色、材质、形状和数量，再检查位置、文字和参考主体。':'只考虑构图、配色、视觉协调与完成度，先不评判是否符合设计要求。')}</p></div><div className="round-progress"><div><span className={!adherence?'current-step':'finished-step'}><Eye size={15}/>{t('美观')} {adherence&&<Check size={13}/>}</span><span className={adherence?'current-step':''}><ClipboardCheck size={15}/>{t('指令遵循')} {adherence&&<Check size={13}/>}</span></div><Progress value={(state.saved??0)/(state.totalJudgments??24)*100} aria-label={language==='en'?'Overall progress':'总体完成进度'}/></div></section>
  {!adherence&&trial.prompt&&<section className="global-prompt"><h2>{t('设计主题')}</h2><p>{trial.prompt}</p></section>}
  {adherence&&trial.requirements&&<section className="requirements"><div className="brief"><h2>{t('设计要求')}</h2><p>{trial.requirements.prompt}</p><span>{t('同色描述对应同色框：不仅检查位置，还要检查框内内容是否满足描述。可点击放大核对。')}</span></div>{[{src:trial.requirements.semantic,label:'区域与文字要求'},{src:trial.requirements.pixel,label:'主体与字形参考'}].map(r=><button className="reference-card" onClick={()=>setZoom(r)} key={r.label}><span>{t(r.label)}<Expand size={13}/></span><img src={asset(r.src)} alt={t(r.label)}/></button>)}</section>}
