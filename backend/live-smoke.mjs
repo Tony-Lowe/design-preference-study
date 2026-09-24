@@ -4,6 +4,7 @@ import manifest from './study-manifest.json' with {type:'json'};
 
 const relay=(process.env.RELAY_URL??'').replace(/\/$/,'');
 if(!relay)throw Error('Set RELAY_URL to the deployed /study-relay URL');
+const studyApi=(process.env.STUDY_API_URL??'').replace(/\/$/,'');
 const adminKey=(await readFile(new URL('../.admin-key',import.meta.url),'utf8')).trim();
 const origin='https://tony-lowe.github.io';
 const grouped=Object.groupBy(manifest.cases,c=>c.pool);
@@ -28,9 +29,15 @@ async function call(path,{method='GET',body,admin=false}={}){
  if(!response.ok)throw Error(`${method} ${path}: ${response.status} ${JSON.stringify(data)}`);
  return data;
 }
+async function studyCall(path,body){
+ const response=await fetch(studyApi+path,{method:'POST',headers:{Origin:origin,Authorization:`Bearer ${adminKey}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+ const data=await response.json();
+ if(!response.ok)throw Error(`Study API ${path}: ${response.status} ${JSON.stringify(data)}`);
+ return data;
+}
 const health=await call('/health');
 if(!health.ok||health.version!==manifest.version)throw Error('Health/version check failed');
-let inserted=false;
+let inserted=false,importAttempted=false;
 try{
  const saved=await call('/answers',{method:'POST',body:answer});inserted=true;
  if(saved.received!==24||!saved.complete)throw Error('Answer write was not confirmed');
@@ -39,12 +46,28 @@ try{
  if(!item)throw Error('Admin read did not find smoke answer');
  if(!item.ipAddress)throw Error('Gateway IP address was not recorded');
  console.log('PASS: health, database write, admin read, and IP capture');
+ if(studyApi){
+  importAttempted=true;
+  for(let i=0;i<answer.votes.length;i+=6){
+   const result=await studyCall('/api/admin/import',{...answer,votes:answer.votes.slice(i,i+6),sourceIp:item.ipAddress});
+   if(result.saved!==i+6||!result.demo)throw Error('Study import receipt was incorrect');
+  }
+  console.log('PASS: all 24 demo judgments imported into the result store');
+ }
 }finally{
- if(inserted){
-  const withdrawn=await call('/answers',{method:'DELETE',body:{id,token}});
-  if(!withdrawn.deleted)throw Error('Withdrawal failed');
-  const ack=await call('/admin/withdrawal-ack',{method:'POST',body:{id},admin:true});
-  if(!ack.acknowledged)throw Error('Smoke answer cleanup failed');
-  console.log('PASS: withdrawal and cleanup');
+ try{
+  if(importAttempted){
+   const removed=await studyCall('/api/admin/withdraw',{id});
+   if(!removed.deleted)throw Error('Result-store cleanup failed');
+   console.log('PASS: result-store cleanup');
+  }
+ }finally{
+  if(inserted){
+   const withdrawn=await call('/answers',{method:'DELETE',body:{id,token}});
+   if(!withdrawn.deleted)throw Error('Withdrawal failed');
+   const ack=await call('/admin/withdrawal-ack',{method:'POST',body:{id},admin:true});
+   if(!ack.acknowledged)throw Error('Smoke answer cleanup failed');
+   console.log('PASS: withdrawal and cleanup');
+  }
  }
 }
