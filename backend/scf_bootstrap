@@ -1,0 +1,5 @@
+#!/bin/bash
+set -eu
+export PORT=9000
+export NODE_ENV=production
+exec /var/lang/node22/bin/node server.mjs
